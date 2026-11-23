@@ -4,6 +4,8 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "boolean_query.h"
+
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -250,19 +252,27 @@ static int build_index(Index *index, const char *directory, int chapter_count)
     return 1;
 }
 
-static void print_postings(const char *token, const Entry *entry)
+static QueryResult lookup_term(const void *context, const char *term)
 {
-    printf("%s -> [", token);
-    if (entry != NULL)
+    const Index *index = context;
+    const Entry *entry = find_entry(index, bucket_for(term), term);
+    if (entry == NULL)
     {
-        for (size_t i = 0; i < entry->count; i++)
+        return (QueryResult){0};
+    }
+    return (QueryResult){entry->postings, entry->count, NULL};
+}
+
+static void print_postings(const char *expression, QueryResult result)
+{
+    printf("%s -> [", expression);
+    for (size_t i = 0; i < result.count; i++)
+    {
+        if (i > 0)
         {
-            if (i > 0)
-            {
-                printf(", ");
-            }
-            printf("%d", entry->postings[i]);
+            printf(", ");
         }
+        printf("%d", result.ids[i]);
     }
     puts("]");
 }
@@ -276,7 +286,7 @@ static int run_queries(const Index *index, const char *path)
         return 0;
     }
 
-    char line[256];
+    char line[4096];
     size_t line_number = 0;
     while (fgets(line, sizeof line, file) != NULL)
     {
@@ -303,19 +313,19 @@ static int run_queries(const Index *index, const char *path)
         {
             continue;
         }
-        if (length != (size_t)utf8_width((unsigned char)token[0]))
+        QueryResult result;
+        double started = now_ms();
+        const char *error = evaluate_query(token, index, lookup_term, &result);
+        double elapsed = now_ms() - started;
+        if (error != NULL)
         {
-            fprintf(stderr, "%s line %zu must contain one UTF-8 character.\n",
-                    path, line_number);
+            fprintf(stderr, "%s line %zu: %s.\n", path, line_number, error);
             fclose(file);
             return 0;
         }
-
-        double started = now_ms();
-        const Entry *entry = find_entry(index, bucket_for(token), token);
-        double elapsed = now_ms() - started;
-        print_postings(token, entry);
-        printf("  Lookup: %.4f ms\n", elapsed);
+        print_postings(token, result);
+        printf("  Query: %.4f ms\n", elapsed);
+        free(result.owned);
     }
 
     int ok = !ferror(file);

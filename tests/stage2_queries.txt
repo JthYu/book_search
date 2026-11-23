@@ -1,0 +1,17 @@
+靨
+黛 AND 湘
+靨 OR 湘
+湘 NOT 玉
+玉 NOT 湘
+(黛 AND 湘) OR 靨
+黛 AND (湘 OR 靨)
+靨 OR 黛 AND 湘
+(黛 OR 湘) NOT 玉
+湘 NOT 玉 AND 黛
+龘 AND 黛
+靨 OR 靨
+黛 NOT 黛
+湘 OR 龘 AND 靨
+(湘 OR 龘) AND 靨
+湘 NOT 靨 NOT 靨
+湘 NOT (靨 NOT 靨)
