@@ -1,0 +1,6 @@
+《紅樓夢》· Project Gutenberg 电子书 #24264 · 2008-01-12 镜像版本
+电子版署名：Xueqin Cao（曹雪芹），录入致谢 Wei-yi Kao。
+书目：https://dev.gutenberg.org/ebooks/24264
+下载来源：https://library.melbac.org/pguttenberg/etext/24264.html
+整理：按回号拆为 UTF-8 文本，保留回目、正文与原文件的字形，移除书前后电子书说明和第四十五回的重复回目。
+测试口径：逐章扫描回目和正文，统计查询字出现在哪些文件中。
