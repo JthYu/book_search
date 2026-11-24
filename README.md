@@ -1,6 +1,8 @@
-# 挑战实验 9 · 阶段 3 中文分词与停用词过滤
+# 挑战实验 9 · 阶段 4 跳表加速倒排记录表
 
-本包包含阶段 3 的 C 源码、Python 预处理脚本、测试用例、性能报告和《红楼梦》120 回语料。可解压至独立目录直接运行。若要合并至已有的 `book_search` 工程，可从包中复制 `src/`、`tools/`、`config/`、`tests/` 和 `requirements.txt`，继续使用工程已有的章节数据。
+本包以阶段 3 为基础，包含完整源码、测试、性能报告和《红楼梦》120 回语料，可解压到独立目录运行。
+
+如果合并到已经提交了阶段 3 的 `book_search`，替换 `src/main.c`、`src/boolean_query.c`、`src/boolean_query.h` 和 `README.md`。新增 `src/posting_skip.c`、`src/posting_skip.h`、`tools/check_stage4.py`、`tools/benchmark_stage4.c` 和 `stage4_report.md`。其余文件由阶段 3 提供。
 
 ## 在 Windows 运行
 
@@ -8,7 +10,7 @@
 
 ```powershell
 py -m pip install -r requirements.txt
-gcc -std=c11 -Wall -Wextra -O2 src/main.c src/boolean_query.c -o book_search.exe
+gcc -std=c11 -Wall -Wextra -O2 src/main.c src/boolean_query.c src/posting_skip.c -o book_search.exe
 py tools/preprocess.py data/hongloumeng 120 build
 .\book_search.exe build/tokens 120 tests/stage3_queries.txt --words
 ```
@@ -16,10 +18,27 @@ py tools/preprocess.py data/hongloumeng 120 build
 如果安装了 Visual Studio 的 C/C++ 工具，可以在 x64 Native Tools Command Prompt 用下面这条命令编译，其他命令中的路径参数照用。
 
 ```bat
-cl /nologo /std:c11 /utf-8 /W4 /O2 /Fe:book_search.exe src\main.c src\boolean_query.c
+cl /nologo /std:c11 /utf-8 /W4 /O2 /Fe:book_search.exe src\main.c src\boolean_query.c src\posting_skip.c
 ```
 
 第一个查询应输出 `红楼梦 -> [5, 25, 120]`。查询文件以 UTF-8 保存，布尔运算符使用大写。每行输入一个关键词或表达式，如 `贾宝玉 AND 林黛玉`。词模式按完整词查词典，请用简体词查询。括号优先，`AND` 和二元 `NOT` 同级且先于 `OR`，同级从左向右。
+
+## 阶段 4 的两种查询模式
+
+```cmd
+.\book_search.exe build/tokens 120 tests/stage3_queries.txt --words
+.\book_search.exe build/tokens 120 tests/stage3_queries.txt --words --skip
+```
+
+第一条用数组做双指针交集，第二条对长度至少为 1024 的倒排表添加多级跳跃索引。最底层直接遍历按升序追加的章号，高层使用每隔 16、256、4096 个位置的指针。跳跃只参与 `AND`；当某侧章号小于另一侧时，沿索引找到第一个大于或等于目标的章号。整个《红楼梦》只有 120 回，所以运行第二条看到 `0 skip lists` 是预期结果。下面的合成数据验证会真正触发跳跃。
+
+```cmd
+py tools/check_stage4.py .\book_search.exe
+gcc -std=c11 -O2 -Isrc tools/benchmark_stage4.c src/boolean_query.c src/posting_skip.c -o benchmark_stage4.exe
+.\benchmark_stage4.exe
+```
+
+验证脚本用 5000 个合成章节，对照由 Python 集合独立算出的 13 组结果。性能程序在内存中构造长倒排表，比较两种查询模式，输出时间和额外内存。各分布的差异见 `stage4_report.md`。
 
 ## 验证与复现
 

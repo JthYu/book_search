@@ -18,22 +18,18 @@
 #include <windows.h>
 #endif
 
-enum
-{
-    BUCKET_COUNT = 4093
-};
+enum { BUCKET_COUNT = 4093 };
 
-typedef struct Entry
-{
+typedef struct Entry {
     int *postings;
     size_t count;
     size_t capacity;
     struct Entry *next;
+    PostingSkip *skip;
     char token[];
 } Entry;
 
-typedef struct
-{
+typedef struct {
     Entry *buckets[BUCKET_COUNT];
 } Index;
 
@@ -54,8 +50,7 @@ static double now_ms(void)
 static size_t bucket_for(const char *token)
 {
     size_t hash = 0;
-    for (size_t i = 0; token[i] != '\0'; i++)
-    {
+    for (size_t i = 0; token[i] != '\0'; i++) {
         hash = (hash * 31 + (unsigned char)token[i]) % BUCKET_COUNT;
     }
     return hash;
@@ -63,10 +58,8 @@ static size_t bucket_for(const char *token)
 
 static Entry *find_entry(const Index *index, size_t bucket, const char *token)
 {
-    for (Entry *entry = index->buckets[bucket]; entry != NULL; entry = entry->next)
-    {
-        if (strcmp(entry->token, token) == 0)
-        {
+    for (Entry *entry = index->buckets[bucket]; entry != NULL; entry = entry->next) {
+        if (strcmp(entry->token, token) == 0) {
             return entry;
         }
     }
@@ -78,12 +71,10 @@ static int add_token(Index *index, const char *token, int doc_id)
     size_t bucket = bucket_for(token);
     Entry *entry = find_entry(index, bucket, token);
 
-    if (entry == NULL)
-    {
+    if (entry == NULL) {
         size_t token_size = strlen(token) + 1;
         entry = malloc(sizeof *entry + token_size);
-        if (entry == NULL)
-        {
+        if (entry == NULL) {
             return 0;
         }
         *entry = (Entry){0};
@@ -93,20 +84,16 @@ static int add_token(Index *index, const char *token, int doc_id)
     }
 
     /* Chapters are indexed in increasing document ID order. */
-    if (entry->count > 0 && entry->postings[entry->count - 1] == doc_id)
-    {
+    if (entry->count > 0 && entry->postings[entry->count - 1] == doc_id) {
         return 1;
     }
-    if (entry->count == entry->capacity)
-    {
-        if (entry->capacity > SIZE_MAX / sizeof *entry->postings / 2)
-        {
+    if (entry->count == entry->capacity) {
+        if (entry->capacity > SIZE_MAX / sizeof *entry->postings / 2) {
             return 0;
         }
         size_t new_capacity = entry->capacity == 0 ? 2 : entry->capacity * 2;
         int *larger = realloc(entry->postings, new_capacity * sizeof *larger);
-        if (larger == NULL)
-        {
+        if (larger == NULL) {
             return 0;
         }
         entry->postings = larger;
@@ -119,12 +106,11 @@ static int add_token(Index *index, const char *token, int doc_id)
 
 static void free_index(Index *index)
 {
-    for (size_t bucket = 0; bucket < BUCKET_COUNT; bucket++)
-    {
+    for (size_t bucket = 0; bucket < BUCKET_COUNT; bucket++) {
         Entry *entry = index->buckets[bucket];
-        while (entry != NULL)
-        {
+        while (entry != NULL) {
             Entry *next = entry->next;
+            free(entry->skip);
             free(entry->postings);
             free(entry);
             entry = next;
@@ -134,20 +120,16 @@ static void free_index(Index *index)
 
 static int utf8_width(int first)
 {
-    if (first < 0x80)
-    {
+    if (first < 0x80) {
         return 1;
     }
-    if (first >= 0xC2 && first <= 0xDF)
-    {
+    if (first >= 0xC2 && first <= 0xDF) {
         return 2;
     }
-    if (first >= 0xE0 && first <= 0xEF)
-    {
+    if (first >= 0xE0 && first <= 0xEF) {
         return 3;
     }
-    if (first >= 0xF0 && first <= 0xF4)
-    {
+    if (first >= 0xF0 && first <= 0xF4) {
         return 4;
     }
     return 0;
@@ -156,13 +138,11 @@ static int utf8_width(int first)
 static int read_character(FILE *file, char token[5], unsigned long *codepoint)
 {
     int first = fgetc(file);
-    if (first == EOF)
-    {
+    if (first == EOF) {
         return ferror(file) ? -1 : 0;
     }
     int width = utf8_width(first);
-    if (width == 0)
-    {
+    if (width == 0) {
         return -1;
     }
 
@@ -171,19 +151,16 @@ static int read_character(FILE *file, char token[5], unsigned long *codepoint)
     unsigned long value = (unsigned long)first & mask[width];
     token[0] = (char)first;
 
-    for (int i = 1; i < width; i++)
-    {
+    for (int i = 1; i < width; i++) {
         int next = fgetc(file);
-        if (next < 0x80 || next > 0xBF)
-        {
+        if (next < 0x80 || next > 0xBF) {
             return -1;
         }
         token[i] = (char)next;
         value = (value << 6) | (unsigned long)(next & 0x3F);
     }
     if (value < minimum[width] || value > 0x10FFFF ||
-        (value >= 0xD800 && value <= 0xDFFF))
-    {
+        (value >= 0xD800 && value <= 0xDFFF)) {
         return -1;
     }
     token[width] = '\0';
@@ -193,14 +170,15 @@ static int read_character(FILE *file, char token[5], unsigned long *codepoint)
 
 static int is_indexable(unsigned long value)
 {
-    return (value >= 0x3400 && value <= 0x4DBF) || (value >= 0x4E00 && value <= 0x9FFF) || (value >= 0xF900 && value <= 0xFAFF);
+    return (value >= 0x3400 && value <= 0x4DBF)
+        || (value >= 0x4E00 && value <= 0x9FFF)
+        || (value >= 0xF900 && value <= 0xFAFF);
 }
 
 static int index_chapter(Index *index, const char *path, int doc_id)
 {
     FILE *file = fopen(path, "rb");
-    if (file == NULL)
-    {
+    if (file == NULL) {
         perror(path);
         return 0;
     }
@@ -208,24 +186,18 @@ static int index_chapter(Index *index, const char *path, int doc_id)
     int status;
     char token[5];
     unsigned long codepoint;
-    while ((status = read_character(file, token, &codepoint)) > 0)
-    {
-        if (is_indexable(codepoint) && !add_token(index, token, doc_id))
-        {
+    while ((status = read_character(file, token, &codepoint)) > 0) {
+        if (is_indexable(codepoint) && !add_token(index, token, doc_id)) {
             fprintf(stderr, "Cannot allocate index memory for %s.\n", path);
             fclose(file);
             return 0;
         }
     }
 
-    if (status < 0)
-    {
-        if (ferror(file))
-        {
+    if (status < 0) {
+        if (ferror(file)) {
             perror(path);
-        }
-        else
-        {
+        } else {
             fprintf(stderr, "%s contains invalid UTF-8.\n", path);
         }
     }
@@ -237,33 +209,28 @@ static int index_chapter(Index *index, const char *path, int doc_id)
 static int index_words(Index *index, const char *path, int doc_id)
 {
     FILE *file = fopen(path, "rb");
-    if (file == NULL)
-    {
+    if (file == NULL) {
         perror(path);
         return 0;
     }
 
     char line[QUERY_BUFFER_SIZE];
     int ok = 1;
-    while (fgets(line, sizeof line, file) != NULL)
-    {
+    while (fgets(line, sizeof line, file) != NULL) {
         size_t length = strcspn(line, "\r\n");
-        if (length == sizeof line - 1)
-        {
+        if (length == sizeof line - 1) {
             fprintf(stderr, "%s contains an overlong token.\n", path);
             ok = 0;
             break;
         }
         line[length] = '\0';
-        if (length > 0 && !add_token(index, line, doc_id))
-        {
+        if (length > 0 && !add_token(index, line, doc_id)) {
             fprintf(stderr, "Cannot allocate index memory for %s.\n", path);
             ok = 0;
             break;
         }
     }
-    if (ferror(file))
-    {
+    if (ferror(file)) {
         perror(path);
         ok = 0;
     }
@@ -274,21 +241,34 @@ static int index_words(Index *index, const char *path, int doc_id)
 static int build_index(Index *index, const char *directory, int chapter_count,
                        int word_mode)
 {
-    for (int i = 0; i < chapter_count; i++)
-    {
+    for (int i = 0; i < chapter_count; i++) {
         int doc_id = i + 1;
         char path[1024];
         int length = snprintf(path, sizeof path, "%s/%03d.txt", directory, doc_id);
-        if (length < 0 || (size_t)length >= sizeof path)
-        {
+        if (length < 0 || (size_t)length >= sizeof path) {
             fprintf(stderr, "Chapter path is too long.\n");
             return 0;
         }
         int ok = word_mode ? index_words(index, path, doc_id)
                            : index_chapter(index, path, doc_id);
-        if (!ok)
-        {
+        if (!ok) {
             return 0;
+        }
+    }
+    return 1;
+}
+
+static int build_skip_levels(Index *index)
+{
+    for (size_t bucket = 0; bucket < BUCKET_COUNT; bucket++) {
+        for (Entry *entry = index->buckets[bucket]; entry != NULL; entry = entry->next) {
+            if (entry->count >= POSTING_SKIP_MIN_COUNT) {
+                entry->skip = posting_skip_build(entry->postings, entry->count);
+                if (entry->skip == NULL) {
+                    fprintf(stderr, "Cannot allocate skip levels.\n");
+                    return 0;
+                }
+            }
         }
     }
     return 1;
@@ -298,20 +278,19 @@ static QueryResult lookup_term(const void *context, const char *term)
 {
     const Index *index = context;
     const Entry *entry = find_entry(index, bucket_for(term), term);
-    if (entry == NULL)
-    {
+    if (entry == NULL) {
         return (QueryResult){0};
     }
-    return (QueryResult){entry->postings, entry->count, NULL};
+    return (QueryResult){
+        .ids = entry->postings, .count = entry->count, .skip = entry->skip
+    };
 }
 
 static void print_postings(const char *expression, QueryResult result)
 {
     printf("%s -> [", expression);
-    for (size_t i = 0; i < result.count; i++)
-    {
-        if (i > 0)
-        {
+    for (size_t i = 0; i < result.count; i++) {
+        if (i > 0) {
             printf(", ");
         }
         printf("%d", result.ids[i]);
@@ -319,69 +298,69 @@ static void print_postings(const char *expression, QueryResult result)
     puts("]");
 }
 
-static void print_index_stats(const Index *index)
+static void print_index_stats(const Index *index, int skip_mode)
 {
     size_t terms = 0;
     size_t postings = 0;
     size_t logical_bytes = 0;
     size_t allocated_bytes = sizeof *index;
-    for (size_t bucket = 0; bucket < BUCKET_COUNT; bucket++)
-    {
-        for (const Entry *entry = index->buckets[bucket]; entry; entry = entry->next)
-        {
+    size_t skip_bytes = 0;
+    size_t skip_lists = 0;
+    for (size_t bucket = 0; bucket < BUCKET_COUNT; bucket++) {
+        for (const Entry *entry = index->buckets[bucket]; entry; entry = entry->next) {
             size_t token_bytes = strlen(entry->token) + 1;
+            if (entry->skip != NULL) {
+                skip_lists++;
+                skip_bytes += posting_skip_bytes(entry->skip);
+            }
             terms++;
             postings += entry->count;
             logical_bytes += token_bytes + entry->count * sizeof(int);
-            allocated_bytes += sizeof *entry + token_bytes + entry->capacity * sizeof(int);
+            allocated_bytes += sizeof *entry + token_bytes
+                               + entry->capacity * sizeof(int);
         }
     }
     printf("Index: %zu terms, %zu postings, %zu logical bytes, %zu allocated bytes\n",
-           terms, postings, logical_bytes, allocated_bytes);
+           terms, postings, logical_bytes, allocated_bytes + skip_bytes);
+    printf("Mode: %s, %zu skip lists, %zu extra skip bytes\n",
+           skip_mode ? "skip" : "array", skip_lists, skip_bytes);
 }
 
 static int run_queries(const Index *index, const char *path, int word_mode)
 {
     FILE *file = fopen(path, "rb");
-    if (file == NULL)
-    {
+    if (file == NULL) {
         perror(path);
         return 0;
     }
 
     char line[QUERY_BUFFER_SIZE];
     size_t line_number = 0;
-    while (fgets(line, sizeof line, file) != NULL)
-    {
+    while (fgets(line, sizeof line, file) != NULL) {
         line_number++;
         char *token = line + strspn(line, " \t");
-        if (line_number == 1 && strncmp(token, "\xef\xbb\xbf", 3) == 0)
-        {
+        if (line_number == 1 && strncmp(token, "\xef\xbb\xbf", 3) == 0) {
             token += 3;
             token += strspn(token, " \t");
         }
         size_t length = strcspn(token, "\r\n");
-        if (strlen(line) == sizeof line - 1 && strchr(line, '\n') == NULL)
-        {
+        if (strlen(line) == sizeof line - 1 && strchr(line, '\n') == NULL) {
             fprintf(stderr, "%s line %zu is too long.\n", path, line_number);
             fclose(file);
             return 0;
         }
-        while (length > 0 && (token[length - 1] == ' ' || token[length - 1] == '\t'))
-        {
+        while (length > 0 && (token[length - 1] == ' ' || token[length - 1] == '\t')) {
             length--;
         }
         token[length] = '\0';
-        if (length == 0)
-        {
+        if (length == 0) {
             continue;
         }
         QueryResult result;
         double started = now_ms();
         const char *error = evaluate_query(token, index, lookup_term, word_mode, &result);
         double elapsed = now_ms() - started;
-        if (error != NULL)
-        {
+        if (error != NULL) {
             fprintf(stderr, "%s line %zu: %s.\n", path, line_number, error);
             fclose(file);
             return 0;
@@ -392,8 +371,7 @@ static int run_queries(const Index *index, const char *path, int word_mode)
     }
 
     int ok = !ferror(file);
-    if (!ok)
-    {
+    if (!ok) {
         perror(path);
     }
     fclose(file);
@@ -402,32 +380,42 @@ static int run_queries(const Index *index, const char *path, int word_mode)
 
 int main(int argc, char *argv[])
 {
-    int word_mode = argc == 5 && strcmp(argv[4], "--words") == 0;
-    if (argc != 4 && !word_mode)
-    {
-        fprintf(stderr, "Usage: book_search <chapter-dir> <chapter-count> <query-file> [--words]\n");
+    if (argc < 4 || argc > 6) {
+        fprintf(stderr, "Usage: book_search <chapter-dir> <chapter-count> <query-file> [--words] [--skip]\n");
         return EXIT_FAILURE;
+    }
+
+    int word_mode = 0;
+    int skip_mode = 0;
+    for (int arg = 4; arg < argc; arg++) {
+        if (strcmp(argv[arg], "--words") == 0 && !word_mode) {
+            word_mode = 1;
+        } else if (strcmp(argv[arg], "--skip") == 0 && !skip_mode) {
+            skip_mode = 1;
+        } else {
+            fprintf(stderr, "Unknown or repeated option: %s\n", argv[arg]);
+            return EXIT_FAILURE;
+        }
     }
 
     errno = 0;
     char *end;
     long count = strtol(argv[2], &end, 10);
-    if (errno == ERANGE || *end != '\0' || count < 1 || count > INT_MAX)
-    {
+    if (errno == ERANGE || *end != '\0' || count < 1 || count > INT_MAX) {
         fprintf(stderr, "Chapter count must be a positive integer.\n");
         return EXIT_FAILURE;
     }
 
     Index index = {0};
     double started = now_ms();
-    if (!build_index(&index, argv[1], (int)count, word_mode))
-    {
+    if (!build_index(&index, argv[1], (int)count, word_mode)
+        || (skip_mode && !build_skip_levels(&index))) {
         free_index(&index);
         return EXIT_FAILURE;
     }
     printf("Indexed %ld chapters in %.3f ms\n", count, now_ms() - started);
 
-    print_index_stats(&index);
+    print_index_stats(&index, skip_mode);
     int ok = run_queries(&index, argv[3], word_mode);
     free_index(&index);
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
