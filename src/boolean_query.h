@@ -3,7 +3,13 @@
 
 #include <stddef.h>
 
-typedef struct {
+enum
+{
+    QUERY_BUFFER_SIZE = 4096
+};
+
+typedef struct
+{
     const int *ids;
     size_t count;
     int *owned;
@@ -13,6 +19,6 @@ typedef struct {
 typedef QueryResult (*LookupTerm)(const void *index, const char *term);
 
 const char *evaluate_query(const char *expression, const void *index,
-                           LookupTerm lookup, QueryResult *result);
+                           LookupTerm lookup, int word_mode, QueryResult *result);
 
 #endif
